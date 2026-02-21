@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ITAM Right-Sizing MVP</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; max-width: 1100px; }
+      h1 { margin-bottom: 8px; }
+      .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      textarea { width: 100%; min-height: 180px; font-family: monospace; }
+      button { padding: 8px 12px; margin-top: 8px; cursor: pointer; }
+      pre { background: #111; color:#d7ffd7; padding: 12px; overflow:auto; min-height: 140px; }
+      .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <h1>ServiceNow ITAM Right-Sizing MVP</h1>
+    <p>Netlify-deployable MVP: ingest telemetry, simulate policy, and review recommendations.</p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>1) Ingest Telemetry Batch</h3>
+        <textarea id="telemetry"></textarea>
+        <button onclick="ingest()">Submit Telemetry</button>
+      </div>
+
+      <div class="card">
+        <h3>2) Create Policy + Simulate</h3>
+        <textarea id="policy"></textarea>
+        <button onclick="createPolicyAndSimulate()">Run Simulation</button>
+      </div>
+    </div>
+
+    <h3>API Response</h3>
+    <pre id="output"></pre>
+
+    <h3>Recommendations</h3>
+    <table id="recTable">
+      <thead><tr><th>Device</th><th>Class</th><th>Action</th><th>Fit</th><th>Overprov</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <script>
+      const telemetrySample = {
+        schema_version: "1.0",
+        tenant_id: "tenant-a",
+        source: "windows_collector",
+        batch_id: "demo-batch-1",
+        sent_at: new Date().toISOString(),
+        records: [{
+          device_key: "WIN-001",
+          observed_at: new Date().toISOString(),
+          session: { vdi: false, interactive_ratio: 0.8 },
+          gpu: { util_pct: 18, vram_used_mb: 850, active_minutes: 3, compute_pct: 4, graphics_pct: 14 },
+          cpu: { util_pct: 25 },
+          ram: { used_pct: 42, paging_pressure: 0 },
+          disk: { latency_ms: 4, busy_pct: 12, queue_len: 0.3 },
+          network: { throughput_mbps: 6, loss_proxy: 0.0 },
+          thermal: { throttle_event: false, on_battery: true, docked: false },
+          apps: [{ publisher: "Microsoft", process: "excel.exe", category: "BI", active_minutes: 2 }]
+        }]
+      };
+
+      const policySample = {
+        tenant_id: "tenant-a",
+        name: "default-policy",
+        strict_mode: true,
+        thresholds: { gpu_util_high: 85 },
+        auto_execute_rules: { DOWNSIZE: { min_confidence: 0.9 } }
+      };
+
+      document.getElementById('telemetry').value = JSON.stringify(telemetrySample, null, 2);
+      document.getElementById('policy').value = JSON.stringify(policySample, null, 2);
+
+      async function ingest() {
+        const payload = JSON.parse(document.getElementById('telemetry').value);
+        const res = await fetch('/api/v1/ingestion/telemetry-batch', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        document.getElementById('output').textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function createPolicyAndSimulate() {
+        const policy = JSON.parse(document.getElementById('policy').value);
+        const pRes = await fetch('/api/v1/admin/policies', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(policy)
+        });
+        const pData = await pRes.json();
+
+        const sRes = await fetch(`/api/v1/admin/policies/${pData.policy_id}/simulate`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenant_id: policy.tenant_id })
+        });
+        const sim = await sRes.json();
+        document.getElementById('output').textContent = JSON.stringify({ policy: pData, simulation: sim }, null, 2);
+
+        const tbody = document.querySelector('#recTable tbody');
+        tbody.innerHTML = '';
+        for (const r of sim.items || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${r.device_key}</td><td>${r.classification}</td><td>${r.action}</td><td>${r.workload_fit_score}</td><td>${r.overprovision_score}</td><td>${r.status}</td>`;
+          tbody.appendChild(tr);
+        }
+      }
+    </script>
+  </body>
+</html>
